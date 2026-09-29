@@ -1,16 +1,16 @@
 import { S as require_jsx_runtime } from "../_libs/@tanstack/react-router+[...].mjs";
-import { a as jobs, t as SiteShell } from "./site-shell-DIkdqKk7.mjs";
-import { t as Section } from "./section-buCRjLgO.mjs";
-//#region node_modules/.nitro/vite/services/ssr/assets/experience-Oq3zYasd.js
+import { t as SiteShell, u as jobs } from "./site-shell-BIQA-h1g.mjs";
+import { t as Section } from "./section-CWEewN7S.mjs";
+//#region node_modules/.nitro/vite/services/ssr/assets/experience-B7EI2k8M.js
 var import_jsx_runtime = require_jsx_runtime();
 function ExperiencePage() {
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SiteShell, { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Section, {
 		eyebrow: "Experience",
-		title: "Work history, intern to lead.",
+		title: "Work history, intern to independent SaaS.",
 		children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", {
-			className: "space-y-12",
+			className: "space-y-5",
 			children: jobs.map((job) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", {
-				className: "rounded-lg border border-border bg-surface p-6 md:p-8",
+				className: "glass rounded-lg p-6 md:p-8",
 				children: [
 					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", {
 						className: "text-xs uppercase tracking-widest text-primary",
@@ -27,7 +27,7 @@ function ExperiencePage() {
 					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("ul", {
 						className: "mt-6 space-y-3",
 						children: job.points.map((p) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("li", {
-							className: "border-l border-border pl-4 text-sm leading-relaxed text-muted",
+							className: "border-l border-glass-edge pl-4 text-sm leading-relaxed text-muted",
 							children: p
 						}, p))
 					})

@@ -15,8 +15,8 @@ function WorkLayout() {
     <SiteShell>
       <Section eyebrow="Selected work" title="Projects ordered by depth, not a random list.">
         <p className="mb-10 max-w-2xl text-muted">
-          The homepage should make it clear in 10–15 seconds: Mueez is a Laravel/PHP developer
-          who builds real business systems. These case studies prove it.
+          Mueez is a Laravel/PHP developer who builds real business systems — logistics, SaaS,
+          HRM, commerce, education.
         </p>
         <div className="grid gap-5">
           {projects.map((p) => (
@@ -24,7 +24,7 @@ function WorkLayout() {
               key={p.slug}
               to="/work/$slug"
               params={{ slug: p.slug }}
-              className="rounded-lg border border-border bg-surface p-6 hover:border-primary/40"
+              className="glass rounded-lg p-6 hover:border-primary/40"
             >
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <h3 className="font-display text-2xl">{p.name}</h3>
