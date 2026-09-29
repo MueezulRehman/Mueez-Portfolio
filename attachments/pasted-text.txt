@@ -1,0 +1,1619 @@
+# Import, Export, Transit, and Logistics Blueprint
+
+## 1. Confirmed operating model
+
+Global Transport Services will use two related but separate operational areas:
+
+1. **Trips**
+   - Used for domestic fleet transport.
+   - Represents a vehicle movement performed by a driver and truck.
+   - Keeps the existing transport, payment, delivery-note, maintenance, and trip-report behavior.
+
+2. **Shipments**
+   - Used for freight-forwarding and clearing-agent work.
+   - Covers:
+     - Sea import
+     - Sea export
+     - Air import
+     - Air export
+     - Road transit
+     - Logistics jobs
+   - Represents the customer freight job, not one vehicle movement.
+   - May contain multiple containers, packages, house bills, legs, documents, charges, vendor costs, and transport legs.
+
+A shipment may create or link to one or more domestic Trips when GTS performs the local delivery or collection. A Trip must never be required for an international shipment that is handled entirely by external carriers.
+
+### Vendor finance slice
+
+Import and export shipments have a branch-scoped accounts-payable workflow:
+
+1. Save an import/export shipment with a vendor assignment; the system automatically creates one linked AP draft for each assignment.
+2. A missing cost or estimate produces a zero-value provisional draft; estimated costs also remain provisional. Enter a positive final cost on the shipment before approving the bill.
+3. Capture the supplier invoice number, invoice date, and due date on the assignment. The linked draft and downloadable AP voucher are updated automatically; upload the supplier's original invoice separately when received.
+4. Record one or more payments against an approved bill. Payment amounts cannot exceed the outstanding balance; the bill becomes `partially_paid` or `paid` automatically.
+5. Review all branch vendor bills at **Accounts payable** (`/accounts/payables`), with search and status filters.
+
+Vendor bills and payments are separate from domestic trip payments. The implementation is restricted to `import_sea`, `export_sea`, `import_air`, and `export_air`, and all shipment, vendor, bill, and payment queries remain branch-scoped.
+
+## 2. Current system assessment
+
+The current application already contains useful foundations:
+
+- `TransportRecord` for domestic trips.
+- A `ShipmentController` with shipment types:
+  `import_sea`, `export_sea`, `import_air`, `export_air`, `logistics`, and `transit`.
+- Customer and sales-person selection.
+- Basic BL document upload.
+- Charge master with buy rate, sell rate, VAT, and government-charge flags.
+- Shipment charge lines and basic buy/sell/VAT totals.
+- Vendor management.
+- Branch-aware models and branch filtering behavior.
+- Existing payment, voucher, delivery-note, and trip-report modules.
+
+The shipment module has grown beyond its original starting form: vendor assignments,
+customer invoices and receipts, vendor bills and payments, shipment status history,
+invoice adjustments, and finance statements are already implemented. It is still
+not a complete forwarding system. The main remaining gaps and hardening work are
+recorded in Sections 20 and 21; in particular, shipment rows still share
+`transport_records` with domestic Trips, appointment scheduling and container
+history are not complete workflows, and posted financial records need stronger
+retention and audit guarantees.
+
+## 3. Target business hierarchy
+
+```text
+Branch
+├── Customer
+├── Vendor
+├── Shipment Job
+│   ├── Parties
+│   ├── Routing / legs
+│   ├── Master bill
+│   ├── House bills
+│   ├── Containers or packages
+│   ├── Documents
+│   ├── Milestones
+│   ├── Customs / clearance tasks
+│   ├── Vendor bookings and costs
+│   ├── Customer charges and revenue
+│   ├── Payments / invoices
+│   └── Linked domestic Trips
+└── Domestic Trip
+    ├── Driver
+    ├── Truck
+    ├── Delivery note
+    └── Trip payments
+```
+
+## 4. Shipment master record
+
+The shipment master should contain only job-level information. It should not be overloaded with one-container or one-trip fields.
+
+### Identity
+
+- Branch
+- System shipment ID
+- Human-readable shipment number, for example:
+  - `GTS-IMP-SEA-2026-0001`
+  - `GTS-EXP-AIR-2026-0001`
+- Shipment type
+- Service level
+- Sales owner
+- Operations owner
+- Customer
+- Customer reference
+- Job status
+- Created date and expected close date
+
+### Shipment types
+
+- `import_sea`
+- `export_sea`
+- `import_air`
+- `export_air`
+- `transit`
+- `logistics`
+
+### Recommended statuses
+
+```text
+Draft
+Quoted
+Booking Requested
+Booked
+Documents Pending
+Cargo Received
+In Transit
+Arrived
+Customs In Progress
+Customs Cleared
+Ready for Delivery
+Delivered
+Invoiced
+Closed
+Cancelled
+On Hold
+```
+
+Status changes must be recorded in a history table with user, branch, timestamp, old status, new status, and note.
+
+## 5. Parties and routing
+
+The shipment should support separate parties because the customer, shipper, consignee, notify party, and paying party can differ.
+
+### Parties
+
+- Shipper
+- Consignee
+- Notify party
+- Importer of record
+- Exporter of record
+- Bill-to customer
+- Clearing agent
+- Carrier or shipping line
+- Airline
+- Overseas agent
+- Local delivery agent
+
+Each party should support either:
+
+- A linked customer/vendor record, or
+- A controlled manual party snapshot stored on the shipment for historical accuracy.
+
+### Routing
+
+A shipment may have multiple legs. Each leg should store:
+
+- Sequence number
+- Transport mode
+- Origin location
+- Destination location
+- Port or airport
+- Planned departure
+- Actual departure
+- Planned arrival
+- Actual arrival
+- Carrier
+- Vessel and voyage, when sea
+- Flight number, when air
+- Booking reference
+- Leg status
+
+## 6. Consolidation and cargo model
+
+The shipment must support both simple and consolidated freight.
+
+### Containers
+
+One shipment may contain many containers. Each container should support:
+
+- Container number
+- Container type and size
+- Seal number
+- Gross weight
+- Net weight
+- Package count
+- Cargo description
+- Temperature or special-handling instructions
+- Empty-return requirement
+- Gate-in date
+- Gate-out date
+- Arrival date
+- Delivery date
+- Container status
+
+### Air and loose cargo packages
+
+Air and loose cargo should use packages rather than forcing container fields:
+
+- Package number
+- Package type
+- Quantity
+- Dimensions
+- Gross weight
+- Chargeable weight
+- Volume / CBM
+- Description
+- Marks and numbers
+
+### Bills
+
+The shipment should support:
+
+- One master bill:
+  - MBL for sea
+  - MAWB for air
+- Multiple house bills:
+  - HBL for sea
+  - HAWB for air
+
+Each house bill should link to its containers or packages and may have its own consignee, shipper, cargo description, and customer reference.
+
+## 7. Documents
+
+Documents must be stored as records, not only as a single file path on the shipment.
+
+### Document record
+
+- Branch
+- Shipment
+- Document type
+- Document number
+- File path
+- Original filename
+- Uploaded by
+- Upload date
+- Expiry date, if applicable
+- Verification status
+- Verified by
+- Verification date
+- Version
+- Notes
+
+### Document types
+
+Sea import:
+
+- Commercial invoice
+- Packing list
+- Bill of lading
+- Certificate of origin
+- Import permit
+- Insurance certificate
+- Customs declaration
+- Delivery order
+- Arrival notice
+- Gate pass
+
+Sea export:
+
+- Commercial invoice
+- Packing list
+- Export declaration
+- Certificate of origin
+- Booking confirmation
+- Shipping instructions
+- Bill of lading draft
+- Final bill of lading
+
+Air import/export:
+
+- Commercial invoice
+- Packing list
+- MAWB / HAWB
+- Airway booking
+- Certificate of origin
+- Import/export declaration
+- Delivery order
+- Customs documents
+
+The UI should show a checklist by shipment type and highlight missing mandatory documents before clearance or closure.
+
+## 8. Customs and clearance
+
+Customs must be a task workflow linked to the shipment and, when relevant, to a house bill or container.
+
+### Clearance task fields
+
+- Task type: import, export, transit, re-export
+- Declaration number
+- Customs office
+- Clearing agent
+- Submission date
+- Assessment date
+- Duty amount
+- Tax amount
+- Other customs charges
+- Payment status
+- Inspection required
+- Inspection date
+- Release date
+- Task status
+- Notes
+- Supporting documents
+
+### Clearance statuses
+
+```text
+Not Started
+Documents Pending
+Submitted
+Under Assessment
+Inspection Required
+Duty Pending
+Released
+Rejected
+Cancelled
+```
+
+## 9. Commercial charges and profitability
+
+The charge master remains the source for standard charges. Shipment charges should be divided into:
+
+1. **Customer revenue**
+   - Sell amount
+   - VAT
+   - Currency
+   - Invoice status
+
+2. **Vendor or operational cost**
+   - Buy amount
+   - Vendor
+   - Vendor invoice/reference
+   - Payable status
+
+3. **Government or pass-through charges**
+   - Duty
+   - Port fees
+   - Customs fees
+   - Taxes
+   - Supporting document
+
+Shipment profitability should calculate:
+
+```text
+Revenue excluding VAT
+- Vendor and operational costs
+- Government charges treated as cost
+= Gross profit
+```
+
+The system must preserve both transaction currency and branch reporting currency:
+
+- Transaction currency
+- Exchange rate
+- Base-currency buy amount
+- Base-currency sell amount
+- Base-currency profit
+
+Totals must be recalculated server-side whenever charge lines change. Client-side totals are display-only.
+
+## 10. Vendor workflow
+
+Operations should be able to request vendor services from a shipment:
+
+- Shipping line booking
+- Airline booking
+- Customs clearance
+- Port handling
+- Warehouse
+- Local transport
+- Overseas agent
+- Insurance
+
+Each vendor service should support:
+
+- Vendor
+- Service type
+- Booking/reference number
+- Requested date
+- Confirmed date
+- Cost estimate
+- Actual cost
+- Vendor invoice
+- Approval state
+- Payment state
+
+## 11. Domestic Trip integration
+
+Trips remain a separate module for domestic vehicle movements.
+
+A shipment may link to multiple trips through a pivot/link record containing:
+
+- Shipment
+- Trip
+- Leg or house bill
+- Purpose: pickup, port transfer, delivery, empty return, warehouse transfer
+- Planned date
+- Actual date
+- Link status
+
+The existing trip record remains responsible for:
+
+- Driver
+- Truck
+- Domestic route
+- Fuel and trip charges
+- Driver payment
+- Delivery note
+- Domestic payment recovery
+
+Shipment screens should show linked trips and allow users to create a domestic trip from the shipment when the local delivery is approved.
+
+## 12. Branch rules
+
+Every business record must have a `branch_id`:
+
+- Shipments
+- Shipment parties
+- Containers
+- Packages
+- Bills
+- Legs
+- Documents
+- Milestones
+- Customs tasks
+- Shipment charges
+- Vendor services
+- Invoices and payments
+- Domestic trips
+- Customers
+- Vendors
+- Charge master
+
+Rules:
+
+- Normal users can only read and modify records in their branch.
+- Head-office users can view all branches when explicitly authorized.
+- Creating a child record must inherit the parent shipment branch.
+- A user must never be able to submit another branch’s ID from a form to bypass isolation.
+- Branch access must be enforced in policies, controllers, and query scopes.
+- Exports must never combine branches unless the user has head-office permission.
+
+## 13. Roles and approval flow
+
+The confirmed responsibility model is:
+
+1. **Sales**
+   - Create customer opportunity or quotation.
+   - Create shipment draft.
+   - Enter customer and routing information.
+   - Prepare proposed revenue charges.
+
+2. **Operations**
+   - Verify shipment information.
+   - Manage bookings, documents, milestones, customs, and deliveries.
+   - Request vendor services.
+   - Link domestic Trips.
+
+3. **Finance**
+   - Approve revenue and cost lines.
+   - Record vendor invoices and customer invoices.
+   - Record receipts and payments.
+   - Close shipment financials.
+
+4. **Branch manager**
+   - Approve exceptions, discounts, credit limits, and write-offs.
+
+5. **Head office**
+   - View and report across branches.
+   - Manage shared masters and cross-branch controls.
+
+Important actions should require approval history rather than a simple editable status.
+
+## 14. Recommended screens
+
+### Shipment list
+
+- Branch-aware list
+- Shipment number
+- Type
+- Customer
+- Route
+- Current milestone
+- ETA
+- Financial status
+- Missing-document indicator
+- Profit indicator
+- Search and filters
+
+### Shipment workspace
+
+Tabs:
+
+1. Overview
+2. Parties
+3. Routing and milestones
+4. Containers / packages
+5. Master and house bills
+6. Documents
+7. Customs
+8. Vendor services
+9. Customer charges
+10. Vendor costs
+11. Linked domestic Trips
+12. Payments and invoices
+13. Profitability
+14. Activity history
+
+### Operational dashboard
+
+- Shipments awaiting documents
+- Upcoming departures
+- Arrivals requiring action
+- Customs pending
+- Deliveries due
+- Vendor invoices pending
+- Customer invoices overdue
+- Shipments with negative or low margin
+
+## 15. Proposed database entities
+
+These are target domain concepts, not an instruction to create a second copy of
+tables that already exist. Before adding a table, map the concept to the current
+schema and reuse or migrate the existing model where possible. In particular,
+preserve the current shipment invoice, invoice-line, receipt, vendor-bill,
+vendor-bill-payment, adjustment, and audit records.
+
+- `shipments`
+- `shipment_parties`
+- `shipment_legs`
+- `shipment_milestones`
+- `shipment_containers`
+- `shipment_packages`
+- `shipment_bills`
+- `shipment_bill_items`
+- `shipment_documents`
+- `shipment_clearance_tasks`
+- `shipment_vendor_services`
+- `shipment_charges`
+- `shipment_invoices`
+- `shipment_invoice_items`
+- `shipment_payments`
+- `shipment_trip_links`
+- `shipment_status_history`
+- `shipment_activity_logs`
+
+After the staged migration in Section 21, `transport_records` should remain the
+domestic Trip table. Existing `charges` should remain the reusable charge master.
+The current shipment charge and finance models should be evolved to support the
+target relationships; do not create parallel ledgers.
+
+## 16. Initial implementation sequence (superseded by Section 21)
+
+The phase outline below records the original direction. Section 21 is the
+authoritative, rechecked plan: it adds finance-history protection before migration,
+keeps the existing AR/AP ledgers, and gives each stage explicit safety gates.
+Follow Section 21 rather than treating this older outline as a separate or
+competing schedule.
+
+## 17. Non-negotiable correctness rules
+
+- A shipment is not the same thing as a domestic Trip.
+- A container or package is not the same thing as a shipment.
+- A master bill can have many house bills.
+- Totals must be calculated on the server.
+- Branch ownership must be derived from the authenticated user or parent record.
+- Closed shipments should not be silently edited; use controlled amendments.
+- Documents must retain history and verification state.
+- Financial approval must be auditable.
+- Deleting a shipment should be restricted once financial or customs records exist.
+- All list, detail, export, and API queries must apply branch authorization.
+
+## 18. Recommended shipment financial model
+
+### 18.0 Scope clarification: domestic Trips are unchanged
+
+The current domestic Trips module is already considered acceptable and is not part of
+this shipment implementation.
+
+- Do not change the existing domestic Trip workflow.
+- Do not add shipment vendor accounting into domestic Trip screens.
+- Do not require a domestic Trip when creating an import/export shipment.
+- Do not copy domestic Trip fields into the shipment vendor model.
+
+The new work is limited to the import/export shipment workflow and its shipment-side
+vendor records. The vendor association is primarily an operational and historical
+record: it tells GTS which supplier handled which shipment service.
+
+### 18.1 Do not store vendor costs only inside the shipment creation form
+
+The shipment creation form should capture the initial commercial estimate, but vendor costs should be entered as separate cost transactions linked to the shipment.
+
+This is safer than placing every vendor cost directly on the shipment because:
+
+- One shipment can use several vendors.
+- One vendor can issue several invoices.
+- An estimated cost can differ from the final invoice.
+- A cost may be paid in installments.
+- Finance may need to approve or reject a cost.
+- The shipment must retain an audit trail when a cost changes.
+
+The shipment should therefore have:
+
+1. **Estimated cost lines** for planning.
+2. **Approved vendor cost lines** for financial control.
+3. **Vendor bills/payables** for amounts actually owed.
+4. **Vendor payments** for amounts actually paid.
+
+### 18.2 Customer receivable model
+
+The customer side should use a separate receivable workflow:
+
+```text
+Shipment
+  -> Customer charge lines
+  -> Customer invoice
+  -> Customer receipt/payment
+  -> Receivable balance
+```
+
+Customer charges may include:
+
+- Freight
+- Customs clearance
+- Documentation
+- Port or airport handling
+- Delivery
+- Warehousing
+- Local transport
+- Government charges recharged to the customer
+- Other service fees
+
+The invoice must show the customer as the party from whom money is receivable. A receipt must be linked to the customer invoice and shipment, not merely entered as an unexplained payment.
+
+Vendor identity and vendor internal notes must never be copied to the customer invoice
+by default.
+
+### 18.3 Vendor payable model
+
+Vendor work should use this workflow:
+
+```text
+Shipment
+  -> Vendor service request
+  -> Estimated vendor cost
+  -> Approved vendor cost
+  -> Vendor bill
+  -> Vendor payment
+  -> Payable balance
+```
+
+Each vendor cost should contain:
+
+- Shipment
+- Branch
+- Vendor
+- Service category
+- Related leg, container, package, house bill, or domestic Trip when applicable
+- Description
+- Currency
+- Exchange rate
+- Estimated amount
+- Approved amount
+- Final invoiced amount
+- Tax or VAT
+- Vendor invoice/reference number
+- Approval status
+- Payment status
+- Due date
+- Supporting document
+- Created by and approved by
+
+The vendor bill must appear in the vendor payable area and in the shipment financial tab. It must not be added to the customer invoice unless a separate customer charge is created to recharge that cost.
+
+### 18.4 Vendor classification
+
+A vendor should have a master classification describing the services it normally provides:
+
+- Shipping line
+- Airline
+- Customs broker
+- Port or terminal
+- Warehouse
+- Transport provider
+- Overseas agent
+- Insurance provider
+- Other supplier
+
+“Payable” and “receivable” should not be treated as a permanent vendor type. They are transaction directions:
+
+- A vendor cost is normally payable.
+- A customer charge is normally receivable.
+- A credit note, refund, commission, or vendor rebate may create an amount receivable from a vendor.
+
+If the business later works with the same company as both a customer and a supplier, use a shared party/company master with separate customer and vendor roles, rather than duplicating the company or changing its type manually.
+
+### 18.5 Shipment vendor record: the simple required workflow
+
+For the first shipment implementation, vendor handling should work as follows:
+
+1. The user creates an import/export shipment.
+2. On the shipment, the user opens **Shipment Vendors**.
+3. The user selects an existing vendor.
+4. The user selects the service type:
+   - Shipping line
+   - Airline
+   - Customs broker
+   - Port
+   - Warehouse
+   - Transport provider
+   - Overseas agent
+   - Insurance provider
+5. The user records the vendor reference, service description, and dates.
+6. The system saves the vendor association on the shipment.
+7. The shipment displays the vendor in its internal operations history.
+8. The vendor page displays the shipment under that vendor's handled jobs.
+9. The customer invoice remains unchanged and does not show this vendor record.
+
+The first version may record a vendor cost for internal reference, but it must keep
+these concepts separate:
+
+- **Vendor association:** who handled the service.
+- **Vendor cost:** what GTS expects or owes for that service.
+- **Customer charge:** what GTS chooses to bill the customer.
+
+Adding a vendor association must never automatically create a customer invoice line.
+Adding a vendor cost must also never automatically create a customer invoice line.
+Only a deliberate **Add to customer charges** action should create a customer charge,
+and that action should record the user, time, source vendor cost, and approval.
+
+### 18.6 Vendor fields aligned with the existing database
+
+The existing `vendors` table already supports the core supplier master information.
+The new shipment vendor record should select from this master rather than duplicate
+the vendor company data.
+
+Existing vendor master fields include:
+
+- Branch
+- Vendor code
+- Company name
+- Vendor type
+- Country
+- City
+- Address
+- Contact person
+- Email
+- Phone
+- Mobile
+- Currency
+- Payment terms
+- Bank name
+- Bank account name
+- Bank account number
+- IBAN
+- SWIFT code
+- Notes
+- Invoice attachment
+- Active/inactive status
+
+The existing vendor type options are:
+
+- `overseas_agent`
+- `shipping_line`
+- `customs_broker`
+- `trucking`
+- `warehouse`
+- `airline`
+- `other`
+
+For shipment operations, the UI should additionally provide the requested service
+categories **Port**, **Transport provider**, and **Insurance provider**. These are
+service categories on the shipment vendor assignment; they do not need to overwrite
+the vendor's master type. For example, a vendor whose master type is `trucking` may
+be assigned to a shipment as the `Transport provider`.
+
+### 18.7 Shipment vendor assignment fields
+
+Add a shipment-specific vendor assignment record containing:
+
+- Branch
+- Shipment
+- Vendor
+- Service category
+- Vendor reference or booking number
+- Service description
+- Origin and destination, when relevant
+- Requested date
+- Confirmed date
+- Service status
+- Estimated cost, optional
+- Final cost, optional
+- Currency
+- Exchange rate, optional
+- Vendor invoice number, optional
+- Vendor invoice date and due date, optional
+- Vendor invoice document, optional
+- Internal notes
+- Assigned by
+- Created and updated timestamps
+
+Recommended service statuses:
+
+```text
+Requested
+Confirmed
+In Progress
+Completed
+Cancelled
+```
+
+Recommended internal cost/payment statuses:
+
+```text
+Not Recorded
+Estimated
+Invoice Received
+Approved
+Partially Paid
+Paid
+Disputed
+```
+
+These statuses are visible to authorized internal users only. They are not customer
+invoice statuses.
+
+### 18.8 What appears where
+
+| Information | Shipment workspace | Vendor page | Customer invoice |
+|---|---:|---:|---:|
+| Vendor company | Yes | Yes | No |
+| Vendor service category | Yes | Yes | No |
+| Vendor booking/reference | Yes | Yes | No |
+| Vendor internal notes | Yes | Yes | No |
+| Vendor estimated cost | Yes, authorized users | Yes, authorized users | No |
+| Vendor invoice number | Yes, finance users | Yes | No |
+| Vendor payment status | Yes, finance users | Yes | No |
+| Customer service charge | Yes | No | Yes |
+| Customer invoice amount | Yes | No | Yes |
+| Customer receipt | Yes | No | No, except invoice balance |
+
+### 18.9 Recommended screens
+
+#### Shipment financial summary
+
+Every shipment should show:
+
+| Section | Meaning |
+|---|---|
+| Customer / Bill-to | Who owes GTS money |
+| Customer invoice total | Total amount billed |
+| Customer received | Amount collected |
+| Customer receivable | Remaining amount to collect |
+| Vendor / Supplier costs | Costs incurred for the shipment |
+| Vendor paid | Amount paid to suppliers |
+| Vendor payable | Remaining amount owed to suppliers |
+| Other operational costs | Internal or government costs |
+| Revenue excluding VAT | Customer revenue excluding VAT |
+| Total cost excluding recoverable VAT | Shipment cost basis |
+| Gross profit | Revenue minus cost |
+| Margin percentage | Gross profit divided by revenue |
+| Financial status | Draft, pending approval, partially invoiced, partially paid, settled, closed |
+
+#### Receivables view
+
+The receivables page should answer:
+
+- Which customer must pay?
+- Which shipment or invoice created the amount?
+- How much was invoiced?
+- How much was received?
+- What is overdue?
+- What is the due date?
+
+#### Payables view
+
+The payables page should answer:
+
+- Which vendor must be paid?
+- Which shipment or vendor bill created the amount?
+- What service was supplied?
+- How much was approved?
+- How much was paid?
+- What remains payable?
+- What is the due date?
+
+#### Shipment cost and revenue tab
+
+The shipment workspace should show every transaction in one place, with separate sections:
+
+1. Customer revenue
+2. Vendor costs
+3. Government/pass-through costs
+4. Domestic Trip costs
+5. Customer invoices and receipts
+6. Vendor bills and payments
+7. Profit calculation
+
+### 18.10 Domestic Trip cost treatment
+
+A domestic Trip linked to a shipment should remain a Trip record, but its financial effect should be visible in the shipment.
+
+Recommended behavior:
+
+- The Trip keeps its driver, truck, fuel, route, delivery note, and trip payment details.
+- The Trip link identifies the shipment, house bill, container, or delivery leg it serves.
+- The shipment receives an allocated operational cost from the Trip.
+- If the Trip is billed to the customer, a separate customer charge is created.
+- If the Trip is an internal fleet movement, it contributes to shipment cost but is not automatically added to the customer invoice.
+
+This prevents duplicate entries while still producing accurate shipment profitability.
+
+### 18.11 Profit calculation
+
+Use two clearly named profit views:
+
+#### Estimated profit
+
+```text
+Estimated customer revenue
+- Estimated vendor and operational costs
+= Estimated gross profit
+```
+
+#### Actual profit
+
+```text
+Customer invoiced revenue excluding VAT
+- Approved/final vendor costs
+- Domestic Trip operational cost
+- Government/pass-through cost treated as expense
+= Actual gross profit
+```
+
+VAT collected or recoverable should not be treated as profit. Foreign-currency amounts should be converted using the stored transaction exchange rate, and both original and base-currency values must be retained.
+
+### 18.12 Example scenario
+
+For shipment `GTS-IMP-SEA-2026-0001`:
+
+1. Sales creates a shipment for Ocean Gate.
+2. Sales adds estimated customer revenue:
+   - Freight: OMR 800
+   - Customs clearance: OMR 150
+   - Delivery: OMR 100
+3. Operations books:
+   - Shipping line: estimated cost OMR 550
+   - Customs broker: estimated cost OMR 90
+   - GTS domestic delivery Trip: estimated internal cost OMR 60
+4. Finance approves the commercial and vendor amounts.
+5. The shipping line sends a bill for OMR 575.
+6. The customs broker sends a bill for OMR 90.
+7. The customer invoice is issued for OMR 1,050 plus applicable VAT.
+8. Finance records:
+   - OMR 300 customer receipt
+   - OMR 575 vendor payment
+9. The system shows:
+   - Customer receivable: OMR 750 plus any unpaid VAT
+   - Vendor payable: OMR 90
+   - Shipment actual cost: OMR 725 plus the allocated domestic Trip cost
+   - Actual gross profit based on invoice revenue and approved/final cost
+
+The vendor bills never become customer invoice lines automatically. If the business wants to recover a vendor cost from the customer, the user must explicitly add a customer charge linked to that cost.
+
+### 18.13 Recommended implementation tables
+
+The following are logical financial entities. Several are already implemented
+under different physical table names. Map and evolve the existing tables instead
+of creating parallel customer or vendor ledgers:
+
+- `shipment_revenue_lines`
+- `shipment_cost_lines`
+- `shipment_vendor_bills`
+- `shipment_vendor_bill_items`
+- `shipment_vendor_payments`
+- `shipment_customer_invoices`
+- `shipment_customer_invoice_items`
+- `shipment_customer_receipts`
+- `shipment_trip_cost_allocations`
+- `shipment_financial_approvals`
+
+Existing shipment invoices, invoice lines, receipts, vendor bills, vendor bill
+payments, invoice adjustments, and vendor-bill audits are the starting point.
+Existing general payment and voucher records remain for legacy Trips; shipment
+finance uses explicit invoice, bill, receipt, payment, and allocation relationships.
+
+### 18.14 Recommended approval rules
+
+- Sales may create estimates but cannot mark vendor costs as paid.
+- Operations may request vendor services and upload supporting documents.
+- Finance approves vendor costs and customer revenue.
+- Finance records vendor payments and customer receipts.
+- Branch managers approve discounts, write-offs, negative-margin jobs, and exceptions.
+- A closed shipment cannot be edited directly; use an amendment or credit/debit adjustment.
+
+## 19. Inline vendor capture during shipment creation
+
+The preferred user experience is a single shipment form with an internal **Vendor
+for this shipment** section.
+
+The user may:
+
+1. Select an existing active vendor from the current branch.
+2. Choose the shipment service category.
+3. Enter shipment-specific vendor details.
+4. Or select **Create new vendor** and enter the vendor master details inline.
+5. Save the shipment once.
+
+The server must save the operation in one database transaction:
+
+```text
+Shipment form submission
+  -> Validate shipment fields
+  -> Find selected vendor in the authenticated branch
+  -> Or create a new Vendor in the authenticated branch
+  -> Create shipment-vendor assignment
+  -> Create shipment charge lines
+  -> Commit all records together
+```
+
+If any part fails, no partial shipment or vendor assignment should remain.
+
+### 19.1 Existing vendor versus new vendor
+
+#### Existing vendor
+
+The form submits:
+
+- `vendor_id`
+- `service_category`
+- Shipment-specific vendor fields
+
+The system must verify that the vendor belongs to the authenticated branch and is
+active. It must not trust a vendor ID from another branch.
+
+#### New vendor
+
+The form submits a nested vendor payload, for example:
+
+```text
+vendor_mode = new
+vendor.vendor_code
+vendor.company_name
+vendor.vendor_type
+vendor.country
+vendor.city
+vendor.contact_person
+vendor.email
+vendor.phone
+vendor.currency
+vendor.payment_terms
+vendor.bank details
+```
+
+The server creates the vendor once and uses its ID for the shipment assignment. The
+vendor master is not duplicated into the shipment record.
+
+The inline form should not require a vendor invoice attachment when the shipment is
+being created. A vendor invoice is a later finance document and should be uploaded
+only when received.
+
+### 19.2 What is stored
+
+The vendor master stores reusable company information:
+
+- Company identity
+- Vendor code
+- Contact details
+- Address
+- Bank details
+- Currency and payment terms
+- Vendor type
+- Active status
+
+The shipment-vendor assignment stores only this shipment's relationship:
+
+- Shipment
+- Vendor
+- Service category
+- Booking/reference number
+- Service description
+- Requested/confirmed dates
+- Service status
+- Internal notes
+- Optional estimated/final cost
+
+This is the correct normalization: one vendor can serve many shipments, and one
+shipment can use many vendors.
+
+### 19.3 Invoice privacy rule
+
+The vendor section is internal-only. It must not be rendered on customer invoices.
+Customer invoice lines come only from explicitly approved customer revenue lines.
+
+The vendor assignment can be visible to:
+
+- Sales, if authorized
+- Operations
+- Finance
+- Branch managers
+- Head-office users
+
+It must not be visible to the customer through invoice PDFs, customer portals, or
+customer-facing shipment documents.
+
+## 20. Existing-code and structure audit
+
+### 20.1 Existing strengths
+
+- `Vendor` already uses branch scoping through `BelongsToBranch`.
+- `VendorController` validates vendor codes as unique within a branch.
+- Existing vendor master fields cover company, contact, bank, currency, and payment
+  terms.
+- Vendor activation/deactivation already exists.
+- `ShipmentController` already uses a database transaction for shipment creation
+  and shipment charge synchronization.
+- Shipment types and customer/sales-person selection already exist.
+- Existing charge lines already separate buy and sell amounts.
+
+### 20.2 Current gaps and risks (rechecked 28 September 2026)
+
+1. Shipment records still live in `transport_records`, which also stores domestic
+   Trips. Shipment finance, status, and vendor records reference that shared table.
+2. Shipment numbers are generated from the latest row for the branch and type;
+   they do not yet use a year-keyed atomic sequence counter. Concurrent creation can
+   produce a duplicate.
+3. Status history exists, but the workflow does not yet enforce a complete
+   role-aware transition matrix, document gates, or operational/financial close
+   rules.
+4. Shipment status history and vendor-bill audit exist, but a general append-only
+   shipment activity history is not yet comprehensive across edits, documents,
+   customer receipts, vendor payments, cancellations, and exceptions.
+5. Shipment appointments are not modeled as scheduled records. A port appointment
+   charge is only a financial amount; it does not reserve a time slot.
+6. Container and package fields are not yet normalized into shipment cargo records
+   with assignment and lifecycle history. Container reuse and duplicate active-use
+   rules need definition.
+7. Document upload exists, but a type-specific checklist, version history,
+   verification, and enforced clearance/delivery requirements are incomplete.
+8. Customs/clearance task management, shipment-to-domestic-Trip linking, and a
+   Shipment -> Trip -> Delivery Note handoff are incomplete.
+9. Currency and exchange-rate fields exist in parts of the finance model, but a
+   consistent per-line OMR base amount, rate direction/date/source, and immutable
+   approved-rate snapshot are not enforced everywhere.
+10. Some shipment, invoice, bill, and history foreign keys cascade on delete.
+    Posted finance and audit records must be protected before allowing shipment
+    deletion or moving shipment rows to a new table.
+11. Invoice synchronization can create a draft invoice while a shipment is being
+    read. Review this side effect and make finance-document creation explicit or
+    otherwise safely idempotent and transactionally controlled.
+12. Vendor assignments currently synchronize an automatic draft bill and prevent
+    a second active bill for the same assignment. Supporting multiple bills per
+    assignment requires an explicit partial-billing and cost-allocation design.
+13. Holds/exceptions, ETA/ETD changes, demurrage/detention deadlines, delivery
+    proof, and operational reminders need a coherent owner-and-history workflow.
+14. Branch scoping is present in shared model/controller patterns, but every
+    shipment child, finance lookup, export, route binding, and cross-branch
+    exception still needs a systematic authorization audit.
+
+### 20.3 Recommended implementation order
+
+The authoritative, staged implementation plan is Section 21. It intentionally
+starts by protecting the live finance workflows, then adds numbering and workflow
+controls, then migrates shipment storage, and only then expands the operational
+workspace. Do not implement the old sequence of adding a second set of invoice,
+bill, or payment tables: reuse and evolve the working shipment finance models
+unless a documented migration proves a replacement is required.
+
+### 20.4 Important structural recommendation
+
+Do not create a second vendor table. Extend the existing vendor master and add a
+shipment-vendor relationship table.
+
+Do not copy all vendor bank and contact fields into every shipment. Store a
+historical snapshot only when legally or operationally required, such as the vendor
+name and reference shown on an internal shipment record.
+
+### 20.5 Implemented foundation and remaining work
+
+Already implemented in the current application:
+
+- Shipment types stored in `transport_records`, with branch-aware list/workspace
+  access patterns.
+- Shipment-vendor assignments, branch-scoped vendor selection, inline vendor
+  creation, and vendor history.
+- Shipment charge lines that keep customer sell charges separate from vendor
+  assignments and buy costs.
+- Customer invoices, approval/issue workflow, invoice email/PDF, receipts, and
+  Accounts Receivable.
+- Vendor bills, approval, audit events, invoice-document reconciliation, payments,
+  statements, and Accounts Payable.
+- Invoice adjustments for post-issue charge changes.
+- Shipment status history and basic operational status updates.
+
+These are existing foundations, not a reason to skip hardening. The remaining
+roadmap must protect these records, preserve their URLs and relationships during
+migration, and avoid duplicating their ledgers. See Section 21 for the staged work.
+
+### 20.6 Verification fixtures
+
+Local verification data can be loaded with:
+
+```bash
+php artisan db:seed --class=ShipmentDemoSeeder
+```
+
+The seeder uses clearly identifiable `DEMO-` values and creates one branch-scoped
+customer, vendor, driver, truck, import shipment, and shipment-vendor assignment.
+It is repeatable and updates the same demo records instead of creating duplicates.
+It should be used only for local verification, not as part of a production seed.
+
+The fixture belongs to the `GT-Line` branch and uses the dedicated local account
+`demo.gtline@example.test` with password `password`. Import/export records are
+excluded from the domestic Trips query; the Trips module accepts only records whose
+`trip_type` is `domestic` or unset.
+
+The shipment workspace is available at `/shipment/{shipment}` and is branch-scoped.
+For example, the GT-Line demo shipment must be opened while authenticated as the
+GT-Line demo user; a GTS-branch user correctly receives a not-found response.
+
+The first customer-billing slice is now available from the shipment workspace.
+After a shipment is delivered, completed, or closed, finance can create one draft
+customer invoice from its sell-side shipment charges. Invoice lines are copied as
+historical snapshots. Vendor assignments, vendor costs, internal notes, and profit
+are never copied into the customer invoice.
+
+The Charge Master is the controlled rate catalog for shipment services. Staff should
+normally select a Charge Master item on the shipment form so the standard buy rate,
+sell rate, VAT, job type, and government-charge flag are loaded consistently. A
+manual charge remains available only for an approved exception or a service that
+has not yet been added to the catalog. The invoice uses the resulting sell amount,
+not the vendor cost.
+
+Charge Master job type filtering is intentional: a charge for `import_air` is not
+shown on a `transit` shipment. Charges shared by multiple shipment types should be
+created with job type `all`; type-specific charges should be created separately.
+The shipment's customer invoice currency is selected on the shipment form and is
+used consistently for its customer charge lines. Master rates are starting values,
+not a currency conversion. Vendor assignment currency defaults from the selected
+vendor and can be overridden for that shipment.
+
+The Oman logistics catalogue is seeded as inactive templates with stable codes and
+zero rates. The seeder only inserts missing codes, so it does not overwrite rates or
+branch applicability. To activate currently inactive rows without changing their
+rates or applicability, run
+`php artisan db:seed --class=ActivateInactiveChargeCatalogSeeder` in the intended
+environment. Review that database first because this seeder activates every
+currently inactive charge. Zero-rate entries remain marked **Rate required**;
+prices are not invented. Government charges are billed at cost. The catalogue
+source is recorded as `Oman Logistics Charges.pdf`.
+
+FCL means **Full Container Load**: one shipment uses a whole shipping container.
+LCL means **Less than Container Load**: cargo shares container space with other
+shipments and is commonly charged by volume (CBM), weight, or a consolidation
+handling unit. Sea shipments separately record import/export type and FCL/LCL
+classification. The charge catalogue is filtered by both fields, and server-side
+validation rejects mode or FCL/LCL mismatches. FCL/LCL-specific charges are rejected
+until a shipment classification is selected.
+
+Customer and vendor statements keep balances separate by currency. No unlike
+currencies are added together unless an exchange rate is explicitly recorded.
+
+Customer charges and vendor services are separate records:
+
+```text
+Charge Master -> shipment charge line -> customer invoice (sell amount)
+Vendor assignment -> vendor cost/booking -> future vendor bill (buy amount)
+```
+
+Selecting a customer charge does not automatically create a vendor assignment. This
+prevents a customer invoice line from incorrectly becoming a vendor payable. The
+operator must assign the actual shipping line, airline, broker, port, warehouse, or
+other vendor separately on the shipment.
+
+The shipment create and edit screens use the same customer-charge workflow. The
+legacy flat financial fields (freight/container rent, customs duty, clearing
+charges, documentation charges, and transit bond fee) are no longer presented as
+shipment charge inputs. Existing database columns are retained for backward
+compatibility, but new customer billing must be entered through Charge Master
+lines so it has one auditable source for invoicing.
+
+Finance can open the invoice review page and move it through the controlled internal
+states `Draft -> Approved -> Issued`, or cancel it. Sending email, PDF generation,
+and customer payment allocation remain the next billing phase.
+
+The Accounts sidebar entry remains responsible for internal Trip and Maintenance
+payment vouchers. Those vouchers are submitted, sent for admin approval, and their
+PDF is unlocked after approval. Shipment vendor bills are separate Accounts
+Payable documents and are reached through **Vendor Bills / Payables**.
+
+A shipment is the source context for a vendor bill, so the professional workflow is
+to create the bill from the shipment workspace (or choose a shipment from the
+Payables screen), not from an unrelated Trip voucher form.
+
+Each vendor bill has two identifiers:
+
+- **Internal AP number**: generated automatically, for example `AP-2026-0001`.
+- **Vendor invoice number**: the number printed by the vendor, entered when the
+  vendor invoice is received and optionally left blank while the bill is drafted.
+
+This separation prevents users from manually inventing internal payable numbers
+and preserves the vendor's original invoice reference for reconciliation.
+
+Shipment status is updated from the shipment workspace using the shipment-specific
+status selector. The current status, location, user, timestamp, and optional note
+are recorded in `shipment_status_histories`. The domestic Trips status endpoint and
+its `Pending/Loaded/In Transit/Reached/Completed` workflow remain separate.
+
+The shared legacy `transport_records.trip_status` column retains the domestic Trip
+values and has been expanded to include the shipment status values. This is required
+because both modules currently use the same legacy table; the controllers still
+validate and expose separate status workflows.
+### Shipment customer receipts (implemented)
+
+Shipment customer invoices use the branch-scoped `shipment_invoice_receipts` ledger. Receipts can
+only be posted against issued, sent, overdue, or an already partially-paid invoice; the invoice is
+locked while posting so the paid and balance amounts cannot race or exceed the invoice total.
+The Accounts Receivable screen lists outstanding invoices, marks issued/sent invoices overdue after
+their due date, and links to the receipt form. Each shipment invoice also displays its complete
+receipt history. This workflow is separate from domestic trip `CompanyPayment` and
+`PaymentAllocation` records.
+
+### Finance statements and branded documents (implemented)
+
+Customer and vendor Statements of Account are available under the Accounts menu. Each statement is
+branch-scoped, supports an optional customer/vendor and date range filter, shows a running balance,
+and can be downloaded as a branded A4 landscape PDF. Customer statements show invoices and receipts;
+vendor statements show approved vendor bills and payments. Draft and cancelled vendor bills are
+excluded from payable statements.
+
+Customer invoice email delivery uses a server-generated branded PDF attachment. It is only available
+for issued, sent, overdue, or partially-paid invoices and requires a valid customer email address.
+Vendor invoice documents can be uploaded to a vendor bill, downloaded by finance users, and
+reconciled after the bill is approved and the vendor invoice number is recorded. Vendor documents
+and costs remain outside customer-facing invoice PDFs and emails.
+
+## 21. Consolidated professional roadmap and end-to-end workflow
+
+This section is the current implementation plan. If an older “current gaps” or
+“deferred” list elsewhere in this document conflicts with Section 20.5 or this
+roadmap, the implementation status in Section 20.5 and the sequence below take
+precedence. The plan extends the working finance workflows; it does not start a
+parallel accounting system.
+
+### 21.1 Design rules
+
+1. **Keep Trips and Shipments distinct.** Domestic Trips remain responsible for
+   vehicles, drivers, fuel, trip payments, and Delivery Notes. A Shipment is the
+   freight job and can exist without a domestic Trip.
+2. **Reuse the live finance ledgers.** Evolve the current shipment invoices,
+   invoice lines, receipts, vendor bills, vendor bill payments, adjustments,
+   statements, and vendor-bill audit. Do not create duplicate AR/AP tables unless
+   a migration plan explicitly replaces, reconciles, and retires an existing
+   ledger.
+3. **Make branch ownership authoritative.** Derive a child record's `branch_id`
+   from its parent shipment and validate every submitted customer, vendor, user,
+   leg, container, Trip, invoice, and bill against that branch. Cross-branch
+   access requires an explicit head-office permission and policy.
+4. **Keep posted finance immutable.** A draft may be corrected or, under a
+   documented retention policy, soft-deleted. Once an invoice or bill is approved,
+   issued, or paid, never hard-delete it or silently rewrite posted values. Use a
+   cancellation/void with a reason or a credit/debit adjustment, with an audit
+   event. Soft deletion by itself is not an audit trail.
+5. **Keep histories append-only.** Record who did what, when, in which branch,
+   and why. Retain status, finance, document, appointment, container, and exception
+   events when a draft or shipment is cancelled or archived.
+6. **Calculate money on the server.** Browser values are previews only. Persist
+   original amount and currency, exchange-rate snapshot, rate direction/date/source,
+   and OMR base amount for every financial line. Define rounding and VAT behavior
+   and freeze the approved/issued snapshot.
+7. **Separate operational and financial state.** Operations may be closed while
+   collection or payment remains outstanding. Financial close is a separate,
+   controlled action and may require all invoices, receipts, vendor bills,
+   payments, adjustments, and reconciliations to be resolved.
+8. **Represent events as records.** A milestone records that an event occurred;
+   an appointment reserves a time window. Do not model either as a miscellaneous
+   text field on the shipment.
+
+### 21.2 Business rules to confirm before implementation
+
+The following are proposed defaults for review before coding:
+
+| Decision | Proposed default |
+|---|---|
+| Shipment number format | `GTS-IMP-SEA-2026-0001` or `GTL-EXP-AIR-2026-0001`; branch + type + year + sequence |
+| Number sequence | One counter per branch, shipment type, and year; reset each year; never reuse a number already issued, even after cancellation |
+| Branch currency | OMR base/reporting currency; persist source currency and the exact rate snapshot used |
+| Exchange-rate direction | OMR per one unit of source currency, with rate date and source recorded |
+| Container duplicate rule | A physical container can be reused on later shipments; block overlapping active assignments according to the agreed operational scope and retain history |
+| Vendor assignment billing | Keep current one-active-bill behavior until partial bills, cost allocation, and reconciliation are specified; then support one assignment to multiple bills intentionally |
+| Draft deletion | Soft-delete or cancel drafts only where no posted/paid finance or protected audit records would be lost |
+| Posted document correction | Explicit cancel/void reason or credit/debit adjustment; never hard-delete approved, issued, or paid records |
+| Operational / financial close | Independent states; operational close does not imply invoices are fully paid |
+| Shipment-to-Trip creation | Explicit user action after required local-delivery details are confirmed; never create a Trip or Delivery Note as a hidden side effect |
+
+Changing any default requires updating this table and its acceptance tests before
+the affected phase starts.
+
+### 21.3 Target end-to-end shipment flow
+
+1. **Create the job.** Sales or authorized operations staff create a draft in the
+   correct branch and select shipment type, customer, customer reference, parties,
+   cargo mode, and initial route. The system allocates the next branch/type/year
+   shipment number transactionally. A shipment does not require a domestic Trip.
+2. **Quote and confirm commercial terms.** Add customer revenue charges from the
+   Charge Master or an authorized manual exception. Store source currency, rate
+   snapshot, VAT, and server-calculated OMR values. Keep customer charges separate
+   from vendor service requests and costs.
+3. **Book vendors and transport legs.** Add one or more vendor assignments and
+   shipment legs. Record the responsible vendor/carrier, booking reference, service,
+   planned dates, route, and operational owner. Vendor bank/contact data remains
+   in the vendor master; internal vendor information is never copied to a customer
+   invoice.
+4. **Schedule appointments.** Create port/terminal, yard gate-in/out, pickup,
+   delivery, customs inspection, warehouse handoff, or empty-return appointments.
+   Store the time window and timezone, location, reference, responsible party,
+   owner, status, and reschedule/cancellation history. Link an appointment to the
+   relevant leg and, when needed, multiple containers through a linking table.
+   Reminders and overdue indicators go to the assigned owner.
+5. **Register cargo and documents.** Record containers or packages as distinct
+   shipment cargo items; associate them with the applicable house bill and leg.
+   Track container lifecycle events and timestamps (for example, gate-in, loaded,
+   departed, arrived, gate-out, delivered, and empty-returned) without making a
+   container number globally unique forever. Upload versioned, verified documents
+   against a checklist tailored to shipment type and the next status transition.
+6. **Clear customs and manage exceptions.** Operations records clearance tasks,
+   declaration/reference numbers, inspection result, duty/tax, release status, and
+   supporting evidence. A hold/exception has a category, owner, reason, expected
+   resolution date, updates, and a resolved timestamp. Status transitions that
+   require missing documents, failed inspection, or unresolved blocking exceptions
+   are rejected server-side unless an authorized, audited override is used.
+7. **Create a domestic delivery Trip when needed.** When GTS performs local
+   collection or delivery, an authorized user explicitly creates or links a
+   domestic Trip to the Shipment and relevant leg/container/house bill. The Trip
+   keeps its own driver, truck, route, costs, payment, and status. Its Delivery
+   Note remains linked to the Trip and is exposed from the Shipment workspace.
+   Shipment vendor accounting is not duplicated in Trip accounts.
+8. **Meet operational invoice readiness.** The system shows which required
+   operational checks remain (for example, delivery proof, customer charges, or
+   required documents). Authorized finance staff can create/review the customer
+   invoice from approved sell-side charges. Reading a list or detail page should
+   not unexpectedly create or alter financial documents.
+9. **Issue customer invoice and collect AR.** Finance approves and issues the
+   invoice; sent/email/PDF events are retained. Receipts are posted to the invoice
+   with transaction locking and overpayment protection. Statements and aging use
+   the existing branch-scoped Accounts Receivable workflow.
+10. **Approve vendor costs and pay AP.** Vendor estimates remain distinguishable
+    from final costs. Reconcile actual vendor invoices and documents, approve bills,
+    and record one or more payments under the agreed bill-allocation rules.
+    Statements and aging use the existing branch-scoped Accounts Payable workflow.
+    Vendor costs do not become customer revenue unless an explicit customer charge
+    is created.
+11. **Close in two dimensions.** Operations may close after operational work and
+    required evidence are complete even when AR/AP remain open. Finance closes only
+    after defined invoice, receipt, bill, payment, adjustment, and reconciliation
+    criteria pass. Freeze a profitability snapshot at financial close; correct it
+    later only through an audited amendment or adjustment.
+12. **Retain the record.** Search, dashboards, reports, exports, audit history, and
+    document downloads remain branch-authorized. Cancelled/closed shipments and
+    posted finance history remain available under the retention policy.
+
+### 21.4 Staged implementation plan and exit gates
+
+#### Stage 0 — Rules, inventory, and baseline
+
+- Confirm the proposed rules in Section 21.2 with Sales, Operations, Finance, and
+  branch management.
+- Inventory all shipment-related tables, foreign keys, route bindings, jobs,
+  reports, attachments, and production data before schema changes.
+- Map current invoices, invoice lines, receipts, vendor assignments, vendor bills,
+  bill payments, adjustments, audits, and statements to their owning shipment.
+- Record baseline tests and branch-specific counts/financial totals for migration
+  comparison.
+
+**Exit gate:** approved business-rule table; reviewed FK/data map; repeatable
+baseline checks; no production data cleanup hidden inside a schema migration.
+
+#### Stage 1 — Protect existing finance and audit history
+
+- Remove unsafe hard-delete/cascade paths for shipments with protected history.
+- Define draft soft-delete/cancel behavior and prevent deletion of approved, issued,
+  partially paid, paid, reconciled, or audited finance records.
+- Require a reason and authorized actor for cancellation/void and preserve issued
+  invoice or bill snapshots.
+- Expand append-only activity events to cover shipment edits, charge changes,
+  status changes, documents, invoices, receipts, vendor bills/payments, adjustments,
+  holds, and overrides.
+- Review and remove write side effects from shipment GET/list/detail requests.
+
+**Exit gate:** tests prove protected finance and audit rows survive cancellation
+and shipment deletion attempts; every sensitive action records actor, branch,
+timestamp, event, and reason; GET requests do not create finance documents.
+
+#### Stage 2 — Numbering, branch authorization, and workflow controls
+
+- Add an atomic sequence table keyed by branch, shipment type, and year, protected
+  by a unique key and transaction/row lock. Never determine the next number solely
+  by scanning the highest shipment row.
+- Preserve already issued numbers; sequence gaps from cancelled jobs are allowed
+  and numbers are never recycled.
+- Enforce a role-aware status transition matrix, cancellation/reopen policy, and
+  separate operational and financial statuses.
+- Add document/readiness gates and a permissioned, audited exception override.
+- Verify route binding, child creation, exports, search, and finance actions are
+  branch-safe.
+
+**Exit gate:** parallel creation tests produce unique numbers; branch-crossing
+requests are denied; invalid state transitions and missing-document transitions
+are rejected; allowed transitions create immutable history.
+
+#### Stage 3 — Separate shipment storage from domestic Trips
+
+- Introduce the dedicated shipment domain table/model and compatibility mapping
+  while keeping `transport_records` as the domestic Trip table.
+- Use an expand/backfill/verify/cutover migration: add the new schema, backfill
+  existing shipment rows, compare counts and financial relationships, dual-read or
+  compatibility-test as needed, then switch routes and services.
+- Migrate/update foreign keys for charges, assignments, invoices, lines, receipts,
+  vendor bills, payments, adjustments, status histories, and audits without losing
+  identifiers or statements.
+- Keep existing route URLs working during rollout or provide redirects; provide a
+  tested rollback/restore procedure.
+- Do not combine destructive table removal with the first production cutover.
+
+**Exit gate:** pre/post row counts, branch ownership, invoice/bill balances,
+receipt/payment totals, documents, and representative URLs reconcile exactly;
+Trips and shipment dashboards show only their intended record types.
+
+#### Stage 4 — Cargo, legs, appointments, and documents
+
+- Normalize legs, containers, packages, and bills; link containers/packages to
+  the correct house bill and leg. Add linking tables only for genuine many-to-many
+  relationships.
+- Track container assignment and status history, including empty return. Enforce
+  the agreed no-overlapping-active-use rule while permitting future reuse.
+- Add appointment and appointment-resource/container links, timezone-aware windows,
+  booking references, owners, status history, rescheduling, cancellation reasons,
+  reminders, and overdue views.
+- Add type-specific document checklists, versioned upload history, verification,
+  expiry, and required-document gates.
+- Add customs clearance tasks and inspection outcomes.
+
+**Exit gate:** tests cover appointment conflicts/reschedules/timezones, container
+reuse and active overlap, document version history and status gates, branch access,
+and customs hold/release.
+
+#### Stage 5 — Shipment-to-Trip operational handoff
+
+- Add explicit shipment/leg/container/house-bill to domestic Trip links with
+  purpose, planned/actual dates, status, and audit history.
+- Provide a user-confirmed “Create domestic Trip” action that pre-fills only
+  validated shipment details and still requires Trip-specific driver, truck, and
+  delivery information.
+- Link the Trip's Delivery Note back through the Trip relationship and show its
+  status/document in the Shipment workspace.
+- Keep domestic Trip payment, driver, truck, and operating-cost ledgers authoritative
+  in the Trip module.
+
+**Exit gate:** one shipment can link to the required number of Trips; duplicate
+links are controlled; Trip/Delivery Note changes appear in Shipment history; no
+duplicate trip payments or vendor costs are created.
+
+#### Stage 6 — Currency, approvals, and financial close
+
+- Complete source-currency, exchange-rate direction/date/source, OMR base amount,
+  decimal precision, and VAT rules across charges, customer invoice lines, vendor
+  bill lines, receipts, and payments.
+- Calculate and validate conversion server-side; snapshot approved/issued rates;
+  define how later FX differences are represented rather than silently rewriting
+  historical amounts.
+- Decide whether one vendor assignment can produce multiple bills. If partial
+  billing is needed, add explicit bill items/allocations, cumulative cost checks,
+  duplicate invoice controls, and reconciliation rules first.
+- Define operational close, financial close, partial close, reopening, adjustment,
+  and profit snapshot policies.
+- Add “Ready for Invoice” checks using configured operational evidence and charge
+  approval, while retaining finance approval as a separate permissioned action.
+
+**Exit gate:** currency and rounding tests match approved examples; invoice/bill
+totals reconcile to lines and payments; posted snapshots cannot be edited; close
+eligibility and amendments are auditable.
+
+#### Stage 7 — Reporting, notifications, and controlled expansion
+
+- Build branch dashboards for upcoming appointments, late ETA/ETD, missing
+  documents, customs holds, empty returns, overdue customer invoices, vendor
+  invoices/payments, and low/negative margin.
+- Route notifications to accountable owners with configurable thresholds and
+  deduplication; avoid broad noisy alerts.
+- Add explicitly authorized head-office cross-branch views and export audit.
+- Add retention, backup/restore, and operational audit export procedures.
+
+**Exit gate:** dashboard totals reconcile to source records; notifications are
+deduplicated, permission-safe, configurable, and tested; branch users cannot obtain
+cross-branch data through filters, exports, or direct URLs.
+
+### 21.5 Rollout and production safety
+
+- Deliver one stage at a time behind tested migrations and reversible application
+  cutovers where possible.
+- Back up production and test restore before any shipment data migration.
+- Run migrations separately from code deployment; do not seed demo data in
+  production.
+- Use production-like data volumes and both GTS and GT-Line test accounts.
+- After each stage, smoke-test shipment creation/edit, customer invoice/receipt,
+  vendor bill/payment, statements, Trips, Delivery Notes, branch restrictions,
+  document downloads, and reports.
+- Do not proceed to the next stage if financial totals, branch ownership, or
+  foreign-key relationships fail reconciliation.

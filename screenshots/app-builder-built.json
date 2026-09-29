@@ -1,0 +1,38 @@
+{
+  "url": "http://127.0.0.1:8081/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Mueez Ul Rehman — Laravel Developer",
+      "hasCanvas": false,
+      "bodyTextLen": 3420,
+      "bodyTextHash": "82c17d102b2f5c0b1daaa8e87df5ed8e2fac6dcd17092f1433c2826b1c9faf57",
+      "bodyTextPrefix": "Mueez. Home Work Experience About Full profile Contact LARAVEL &",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Mueez Ul Rehman — Laravel Developer",
+      "hasCanvas": false,
+      "bodyTextLen": 3372,
+      "bodyTextHash": "cdf2c1429893c50f5e011bf8597a8a5ba1960218e1f4397a1b4f49c4dda8dcd6",
+      "bodyTextPrefix": "Mueez. LARAVEL & PHP · BUSINESS SYSTEMS Muhammad Mueez Ul Rehman",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-built.json",
+  "divergesFromBaseline": false,
+  "baselineReasons": []
+}
